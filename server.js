@@ -19,31 +19,31 @@ app.use(cors({
     'http://localhost:5173',
     'http://localhost:5174',
     'http://localhost:5175',
-     
+    'https://your-actual-frontend-domain.vercel.app'
   ],
   credentials: true
 }));
 
 app.use(express.json());
 
- app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
- async function connectDB() {
-   if (mongoose.connection.readyState === 1) {
+async function connectDB() {
+  if (mongoose.connection.readyState === 1) {
     return; // already connected
   }
   try {
     await mongoose.connect(process.env.MONGO_URI, {
-      serverSelectionTimeoutMS: 5000,  
+      serverSelectionTimeoutMS: 5000,
     });
     console.log('MongoDB connected');
   } catch (err) {
     console.log('DB Error:', err);
-    throw err;  
+    throw err;
   }
 }
 
- app.use(async (req, res, next) => {
+app.use(async (req, res, next) => {
   try {
     await connectDB();
     next();
@@ -61,7 +61,7 @@ app.get('/', (req, res) => {
   res.send('API is running...');
 });
 
- if (process.env.NODE_ENV !== 'production') {
+if (process.env.NODE_ENV !== 'production') {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
