@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 
 import authRoutes from './routes/auth.js';
 import cartRoutes from './routes/cart.js';
-import foodRoutes from './api/food/food.routes.js'; // ✅ NEW
+import foodRoutes from './modules/food/food.routes.js'; 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
