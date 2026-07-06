@@ -1,6 +1,7 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import nodemailer from 'nodemailer';
 import User from '../models/User.js';
 import Otp from '../models/Otp.js';
 import crypto from 'crypto';
@@ -17,11 +18,11 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-     const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = new User({ name, email, password: hashedPassword });
     await newUser.save();
 
-     const token = jwt.sign(
+    const token = jwt.sign(
       { id: newUser._id, email: newUser.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
@@ -50,12 +51,12 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'User not found' });
     }
 
-     const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid password' });
     }
 
-      const token = jwt.sign(
+    const token = jwt.sign(
       { id: user._id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
@@ -78,6 +79,36 @@ router.post('/login', async (req, res) => {
 const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
+
+const sendOtpEmail = async (email, otp) => {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 587);
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'no-reply@example.com';
+
+  if (!host || !user || !pass) {
+    console.warn('SMTP email credentials are not configured. OTP was not emailed.');
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    auth: {
+      user,
+      pass,
+    },
+  });
+
+  await transporter.sendMail({
+    from,
+    to: email,
+    subject: 'Your OTP code',
+    html: `<p>Your OTP code is <strong>${otp}</strong>.</p><p>It expires in 5 minutes.</p>`,
+  });
+};
 
 router.post('/send-otp', async (req, res) => {
   try {
@@ -110,6 +141,13 @@ router.post('/send-otp', async (req, res) => {
     });
 
     await otpRecord.save();
+
+    try {
+      await sendOtpEmail(email, otp);
+    } catch (emailErr) {
+      console.error('OTP email send failed:', emailErr);
+      return res.status(500).json({ message: 'Failed to send OTP email' });
+    }
 
     if (process.env.NODE_ENV !== 'production') {
       console.log(`OTP for ${email}: ${otp}`);
@@ -231,7 +269,7 @@ router.post('/reset-password/:token', async (req, res) => {
       return res.status(400).json({ message: 'Token invalid or expired' });
     }
 
-     user.password = await bcrypt.hash(password, 10);
+    user.password = await bcrypt.hash(password, 10);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
