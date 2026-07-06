@@ -2,6 +2,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
+import Otp from '../models/Otp.js';
 import crypto from 'crypto';
 
 const router = express.Router();
@@ -16,13 +17,11 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    // ✅ FIX: hash password before saving
-    const hashedPassword = await bcrypt.hash(password, 10);
+     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = new User({ name, email, password: hashedPassword });
     await newUser.save();
 
-    // ✅ FIX: return a real JWT token on register
-    const token = jwt.sign(
+     const token = jwt.sign(
       { id: newUser._id, email: newUser.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
@@ -51,14 +50,12 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'User not found' });
     }
 
-    // ✅ FIX: compare hashed password
-    const isMatch = await bcrypt.compare(password, user.password);
+     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid password' });
     }
 
-    // ✅ FIX: generate a real JWT (was 'dummy-token' before)
-    const token = jwt.sign(
+      const token = jwt.sign(
       { id: user._id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
@@ -71,6 +68,90 @@ router.post('/login', async (req, res) => {
       user: { id: user._id, name: user.name, email: user.email },
     });
 
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ================= OTP FLOW =================
+const OTP_TTL_MS = 5 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+const MAX_OTP_ATTEMPTS = 5;
+
+router.post('/send-otp', async (req, res) => {
+  try {
+    const { email, purpose } = req.body;
+
+    if (!email || !purpose) {
+      return res.status(400).json({ message: 'Email and purpose are required' });
+    }
+
+    if (!['register', 'reset'].includes(purpose)) {
+      return res.status(400).json({ message: 'Invalid purpose' });
+    }
+
+    const recentOtp = await Otp.findOne({ email, purpose }).sort({ createdAt: -1 });
+    if (recentOtp && Date.now() - new Date(recentOtp.createdAt).getTime() < OTP_RESEND_COOLDOWN_MS) {
+      return res.status(429).json({ message: 'Please wait before requesting another OTP' });
+    }
+
+    const otp = crypto.randomInt(100000, 1000000).toString().padStart(6, '0');
+    const otpHash = await bcrypt.hash(otp, 10);
+
+    await Otp.deleteMany({ email, purpose });
+
+    const otpRecord = new Otp({
+      email,
+      otpHash,
+      purpose,
+      attempts: 0,
+      expiresAt: new Date(Date.now() + OTP_TTL_MS),
+    });
+
+    await otpRecord.save();
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`OTP for ${email}: ${otp}`);
+    }
+
+    res.json({ success: true, message: 'OTP sent successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { email, otp, purpose } = req.body;
+
+    if (!email || !otp || !purpose) {
+      return res.status(400).json({ message: 'Email, OTP, and purpose are required' });
+    }
+
+    const record = await Otp.findOne({ email, purpose });
+    if (!record) {
+      return res.status(400).json({ message: 'OTP expired or not requested' });
+    }
+
+    if (record.attempts >= MAX_OTP_ATTEMPTS) {
+      await Otp.deleteOne({ _id: record._id });
+      return res.status(429).json({ message: 'Too many attempts. Request a new OTP.' });
+    }
+
+    const isValid = await bcrypt.compare(otp, record.otpHash);
+    if (!isValid) {
+      record.attempts += 1;
+      await record.save();
+      return res.status(400).json({ message: 'Incorrect OTP' });
+    }
+
+    if (purpose === 'register') {
+      await Otp.deleteOne({ _id: record._id });
+    }
+
+    res.json({ success: true, message: 'OTP verified successfully' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
@@ -100,6 +181,42 @@ router.post('/forgot-password', async (req, res) => {
 });
 
 // ================= RESET PASSWORD =================
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ message: 'Email, OTP, and new password are required' });
+    }
+
+    const record = await Otp.findOne({ email, purpose: 'reset' });
+    if (!record) {
+      return res.status(400).json({ message: 'OTP expired or not requested' });
+    }
+
+    const isValid = await bcrypt.compare(otp, record.otpHash);
+    if (!isValid) {
+      record.attempts += 1;
+      await record.save();
+      return res.status(400).json({ message: 'Incorrect OTP' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    await Otp.deleteOne({ _id: record._id });
+
+    res.json({ success: true, message: 'Password reset successful' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 router.post('/reset-password/:token', async (req, res) => {
   try {
     const { token } = req.params;
@@ -114,8 +231,7 @@ router.post('/reset-password/:token', async (req, res) => {
       return res.status(400).json({ message: 'Token invalid or expired' });
     }
 
-    // ✅ FIX: hash the new password too
-    user.password = await bcrypt.hash(password, 10);
+     user.password = await bcrypt.hash(password, 10);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
