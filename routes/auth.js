@@ -88,8 +88,9 @@ const sendOtpEmail = async (email, otp) => {
   const from = process.env.EMAIL_FROM || process.env.SMTP_USER || 'no-reply@example.com';
 
   if (!host || !user || !pass) {
-    console.warn('SMTP email credentials are not configured. OTP was not emailed.');
-    return;
+    const error = new Error('SMTP email credentials are not configured. Set SMTP_HOST, SMTP_USER, and SMTP_PASS.');
+    console.error(error.message);
+    throw error;
   }
 
   const transporter = nodemailer.createTransport({
@@ -145,8 +146,11 @@ router.post('/send-otp', async (req, res) => {
     try {
       await sendOtpEmail(email, otp);
     } catch (emailErr) {
-      console.error('OTP email send failed:', emailErr);
-      return res.status(500).json({ message: 'Failed to send OTP email' });
+      console.error('OTP email send failed:', emailErr.message || emailErr);
+      return res.status(500).json({
+        message: 'Failed to send OTP email',
+        error: emailErr.message || 'Unknown mail error',
+      });
     }
 
     if (process.env.NODE_ENV !== 'production') {
